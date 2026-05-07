@@ -1,0 +1,9 @@
+.env.test
+.env.prd
+.env.local
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+preview_*.html
+*.log
