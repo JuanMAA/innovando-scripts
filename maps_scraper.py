@@ -36,8 +36,51 @@ DETAIL_FIELDS = (
     "name,formatted_phone_number,international_phone_number,"
     "website,opening_hours,photos,rating,user_ratings_total,"
     "formatted_address,editorial_summary,place_id,geometry,types,"
-    "reviews,price_level,business_status"
+    "reviews,price_level,business_status,"
+    # Amenities booleanas de Places API
+    "wheelchair_accessible_entrance,delivery,dine_in,takeout,"
+    "reservable,serves_breakfast,serves_lunch,serves_dinner,"
+    "serves_brunch,serves_vegetarian_food,outdoor_seating,"
+    "live_music"
 )
+
+# Campos booleanos de Places API → etiqueta con emoji
+PLACES_AMENITY_MAP = {
+    "wheelchair_accessible_entrance": "♿ Acceso accesible",
+    "delivery":                        "🚚 Delivery",
+    "dine_in":                         "🍽️ Comer en el local",
+    "takeout":                         "🥡 Para llevar",
+    "reservable":                      "📅 Reservas disponibles",
+    "serves_breakfast":                "🍳 Desayuno",
+    "serves_lunch":                    "☀️ Almuerzo",
+    "serves_dinner":                   "🌙 Cena",
+    "serves_brunch":                   "🥂 Brunch",
+    "serves_vegetarian_food":          "🥗 Opciones vegetarianas",
+    "outdoor_seating":                 "🌿 Terraza / área exterior",
+    "live_music":                      "🎵 Música en vivo",
+}
+
+# Defaults por categoría cuando Places no tiene campos booleanos
+AMENITY_CATEGORY_DEFAULTS = {
+    "hotel":       ["🛜 WiFi gratis", "🅿️ Estacionamiento", "🕐 Recepción 24h", "🛏️ Ropa de cama", "🔥 Calefacción", "🚿 Baño privado"],
+    "hostal":      ["🛜 WiFi gratis", "🔒 Lockers", "🍳 Cocina compartida", "🛏️ Ropa de cama", "👥 Zona común", "🕐 Recepción"],
+    "hostería":    ["🛜 WiFi gratis", "🅿️ Estacionamiento", "🛏️ Ropa de cama", "🍳 Desayuno incluido", "🔥 Calefacción", "🌿 Jardín"],
+    "cabaña":      ["🛜 WiFi gratis", "🍳 Cocina equipada", "🅿️ Estacionamiento", "🛏️ Ropa de cama", "🔥 Parrilla/BBQ", "🌿 Jardín privado"],
+    "restaurante": ["🛜 WiFi gratis", "🍽️ Dine in", "🥡 Para llevar", "📅 Reservas", "🅿️ Estacionamiento", "💳 Pagos con tarjeta"],
+    "café":        ["🛜 WiFi gratis", "🥡 Para llevar", "💳 Pagos con tarjeta", "😌 Ambiente tranquilo", "🌿 Terraza"],
+    "bar":         ["🎵 Música en vivo", "🌿 Terraza", "🅿️ Estacionamiento", "💳 Pagos con tarjeta", "📅 Reservas"],
+    "turismo":     ["🗣️ Guía en español", "🚌 Transporte incluido", "🛡️ Seguro básico", "📅 Reserva online", "📷 Oportunidades fotográficas"],
+    "tour":        ["🗣️ Guía en español", "🚌 Transporte incluido", "🛡️ Seguro básico", "📅 Reserva online", "👨‍👩‍👧 Grupos pequeños"],
+}
+
+AMENITY_FALLBACK = [
+    "🛜 WiFi gratis",
+    "💳 Pagos con tarjeta",
+    "📅 Reservas disponibles",
+    "🅿️ Estacionamiento",
+    "♿ Acceso accesible",
+    "🌟 Atención personalizada",
+]
 
 PHOTOS_URL = "https://maps.googleapis.com/maps/api/place/photo"
 MAPS_BASE  = "https://www.google.com/maps/place/?q=place_id:"
@@ -76,6 +119,28 @@ DIAGNOSTICOS = {
 # ──────────────────────────────────────────────
 # HELPERS — nuevos campos
 # ──────────────────────────────────────────────
+
+def extraer_amenities(detalle: dict, category: str) -> list[str]:
+    """
+    Extrae amenities del detalle de Places API.
+    Cadena: campos booleanos → defaults por categoría → fallback genérico.
+    """
+    amenities = [
+        label
+        for field, label in PLACES_AMENITY_MAP.items()
+        if detalle.get(field) is True
+    ]
+    if amenities:
+        return amenities
+
+    # Defaults por categoría (búsqueda parcial)
+    cat = (category or "").lower().strip()
+    for key, defaults in AMENITY_CATEGORY_DEFAULTS.items():
+        if cat == key or cat in key or key in cat:
+            return defaults
+
+    return AMENITY_FALLBACK
+
 
 def obtener_foto_urls(photos: list, api_key: str, max_photos: int = 10) -> list[str]:
     """Construye URLs de fotos de Google Places."""
@@ -317,7 +382,7 @@ def scrape_city(
     """Pipeline completo: buscar → detallar → scorear → guardar en Supabase."""
     sb = get_client(env=env)
 
-    tracker = APITracker(env=env)
+    tracker = APITracker(env=env, sb=sb, script="maps_scraper")
 
     print(f"\n{'='*55}")
     print(f"🌍 Ciudad: {city} | Ambiente: {env}")
@@ -362,6 +427,7 @@ def scrape_city(
             geo          = detalle.get("geometry", {}).get("location", {})
             review_data  = analizar_reviews(detalle.get("reviews", []))
             foto_urls    = obtener_foto_urls(detalle.get("photos", []), api_key)
+            amenities    = extraer_amenities(detalle, cat_name)
             business_status = detalle.get("business_status", "OPERATIONAL")
 
             slug = generar_slug(name)
@@ -402,6 +468,8 @@ def scrape_city(
                 "review_keywords_neg": review_data.get("keywords_neg"),
                 "review_trend":      review_data.get("trend"),
                 "photo_urls":        foto_urls,
+                "amenities":         amenities,
+                "description":       detalle.get("editorial_summary", {}).get("overview") or None,
             }
 
             try:
@@ -445,8 +513,15 @@ def scrape_city(
                         "review_keywords_neg": review_data.get("keywords_neg"),
                         "reviews":             review_data.get("reviews_clean"),
                         "photo_urls":          foto_urls,
+                        "amenities":           amenities,
                         "types":               business_data.get("types"),
                     }, source="google_maps", step="maps_scraper")
+
+                    # Sincronizar columna amenities en businesses
+                    import json as _json
+                    sb.table("businesses").update({
+                        "amenities": _json.dumps(amenities, ensure_ascii=False)
+                    }).eq("id", bid).execute()
 
                 print(f"      ✅ Score: {score_total}/100 | {diagnostico[:60]}...")
             except Exception as e:

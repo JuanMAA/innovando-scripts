@@ -380,6 +380,8 @@ KEYS = {
         "price_level", "business_status", "open_now", "utc_offset_minutes",
         "review_trend", "review_keywords_pos", "review_keywords_neg",
         "photo_urls", "google_maps_url", "types", "reviews",
+        "amenities",    # JSON array con emoji: ["🛜 WiFi gratis", ...]
+        "description",  # Texto de editorial_summary.overview de Google Places
     ],
     "web": [
         "website", "ssl", "mobile_friendly", "load_time_ms",
