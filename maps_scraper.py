@@ -92,27 +92,26 @@ CATEGORIAS = {
     "cabaña":      "cabaña turística",
 }
 
-# Pesos para calcular score Maps (P2a) y Reputación (P2c)
-PESOS = {
-    "phone":       10,
-    "website":     20,
-    "hours":       15,
-    "photos":      15,
-    "description": 10,
-    "rating":      10,
-    "reviews":     10,
-    "address":     10,
+# ── Pesos P2a (máx 20) ────────────────────────
+PESOS_P2A = {
+    "phone":       4,
+    "hours":       5,
+    "photos":      6,   # ≥10 fotos: 6 | ≥5: 3 | <5: 0
+    "description": 5,
+}
+# ── Pesos P2c (máx 20) ────────────────────────
+PESOS_P2C = {
+    "rating":      10,  # ≥4.5:10 | ≥4.0:7 | ≥3.5:4 | <3.5:0
+    "reviews":     10,  # ≥100:10 | ≥50:7 | ≥20:4 | ≥5:2 | <5:0
 }
 
 DIAGNOSTICOS = {
-    "website":     "{name} no tiene sitio web — pierde visibilidad en Google y ChatGPT.",
     "phone":       "{name} no tiene teléfono en Maps — los clientes no pueden llamar directamente.",
     "hours":       "{name} no tiene horarios en Maps — los viajeros no saben cuándo está abierto.",
     "photos":      "{name} tiene pocas fotos en Maps — primer motivo de abandono de viajeros.",
     "description": "{name} no tiene descripción en Maps — no comunica qué lo hace especial.",
     "reviews":     "{name} tiene pocas reseñas — genera desconfianza en viajeros nuevos.",
     "rating":      "{name} aún no tiene ratinges en Maps.",
-    "address":     "{name} no tiene dirección completa en Maps.",
 }
 
 
@@ -244,79 +243,81 @@ def generar_slug(name: str) -> str:
 
 def calcular_scores(detalle: dict) -> tuple[int, int, str, dict]:
     """
-    Calcula score_p2a (P2a), score_p2c (P2c),
+    Calcula score_p2a (P2a, máx 20), score_p2c (P2c, máx 20),
     sales_diagnosis y desglose por campo.
+    score_total inicial = score_p2a + score_p2c (los demás los calculan otros scorers).
     """
     name = detalle.get("name", "Este negocio")
     missing_fields = []
     desglose = {}
 
-    # Teléfono
+    # Teléfono (P2a)
     tiene_tel = bool(
         detalle.get("formatted_phone_number") or
         detalle.get("international_phone_number")
     )
-    desglose["phone"] = PESOS["phone"] if tiene_tel else 0
+    desglose["phone"] = PESOS_P2A["phone"] if tiene_tel else 0
     if not tiene_tel: missing_fields.append("phone")
 
-    # Sitio web
-    tiene_web = bool(detalle.get("website"))
-    desglose["website"] = PESOS["website"] if tiene_web else 0
-    if not tiene_web: missing_fields.append("website")
-
-    # Horarios
+    # Horarios (P2a)
     has_hours = bool(detalle.get("opening_hours", {}).get("weekday_text"))
-    desglose["hours"] = PESOS["hours"] if has_hours else 0
+    desglose["hours"] = PESOS_P2A["hours"] if has_hours else 0
     if not has_hours: missing_fields.append("hours")
 
-    # Fotos (mínimo 5)
+    # Fotos (P2a): ≥10: 6pts, ≥5: 3pts, <5: 0pts
     num_fotos = len(detalle.get("photos", []))
-    if num_fotos >= 5:
-        desglose["photos"] = PESOS["photos"]
-    elif num_fotos > 0:
-        desglose["photos"] = PESOS["photos"] // 2
+    if num_fotos >= 10:
+        desglose["photos"] = PESOS_P2A["photos"]
+    elif num_fotos >= 5:
+        desglose["photos"] = PESOS_P2A["photos"] // 2
     else:
         desglose["photos"] = 0
         missing_fields.append("photos")
 
-    # Descripción
+    # Descripción (P2a)
     tiene_desc = bool(detalle.get("editorial_summary", {}).get("overview"))
-    desglose["description"] = PESOS["description"] if tiene_desc else 0
+    desglose["description"] = PESOS_P2A["description"] if tiene_desc else 0
     if not tiene_desc: missing_fields.append("description")
 
-    # Calificación
+    # Calificación (P2c): ≥4.5:10 | ≥4.0:7 | ≥3.5:4 | <3.5:0
     rating = detalle.get("rating", 0) or 0
-    tiene_rating = rating > 0
-    desglose["rating"] = PESOS["rating"] if tiene_rating else 0
-    if not tiene_rating: missing_fields.append("rating")
+    if rating >= 4.5:
+        desglose["rating"] = 10
+    elif rating >= 4.0:
+        desglose["rating"] = 7
+    elif rating >= 3.5:
+        desglose["rating"] = 4
+    else:
+        desglose["rating"] = 0
+        if rating == 0: missing_fields.append("rating")
 
-    # Reseñas (mínimo 10)
+    # Reseñas (P2c): ≥100:10 | ≥50:7 | ≥20:4 | ≥5:2 | <5:0
     num_reviews = detalle.get("user_ratings_total", 0) or 0
-    if num_reviews >= 10:
-        desglose["reviews"] = PESOS["reviews"]
-    elif num_reviews > 0:
-        desglose["reviews"] = PESOS["reviews"] // 2
+    if num_reviews >= 100:
+        desglose["reviews"] = 10
+    elif num_reviews >= 50:
+        desglose["reviews"] = 7
+    elif num_reviews >= 20:
+        desglose["reviews"] = 4
+    elif num_reviews >= 5:
+        desglose["reviews"] = 2
     else:
         desglose["reviews"] = 0
         missing_fields.append("reviews")
 
-    # Dirección
-    tiene_dir = bool(detalle.get("formatted_address"))
-    desglose["address"] = PESOS["address"] if tiene_dir else 0
-    if not tiene_dir: missing_fields.append("address")
-
     # Scores
     score_p2a = desglose["phone"] + desglose["hours"] + desglose["photos"] + desglose["description"]
-    score_rep = desglose["rating"] + desglose["reviews"]
-    score_total = sum(desglose.values())
+    score_p2c = desglose["rating"] + desglose["reviews"]
+    score_total = score_p2a + score_p2c  # solo P2a + P2c; los demás los calculan otros scorers
 
     # Diagnóstico — campo más crítico faltante
+    pesos_diag = {**PESOS_P2A, "rating": PESOS_P2C["rating"], "reviews": PESOS_P2C["reviews"]}
     diagnostico = ""
     if missing_fields:
-        campo_critico = max(missing_fields, key=lambda c: PESOS.get(c, 0))
+        campo_critico = max(missing_fields, key=lambda c: pesos_diag.get(c, 0))
         diagnostico = DIAGNOSTICOS.get(campo_critico, "").format(name=name)
 
-    return score_p2a, score_rep, score_total, diagnostico, desglose
+    return score_p2a, score_p2c, score_total, diagnostico, desglose
 
 
 # ──────────────────────────────────────────────

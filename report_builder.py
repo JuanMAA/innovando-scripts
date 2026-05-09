@@ -32,31 +32,71 @@ from supabase_client import (
 # CÁLCULO DE SCORES
 # ──────────────────────────────────────────────
 
+# ── Constantes de scoring ──────────────────────────────────────────────────────
+SCORE_MAX = {
+    "p2a": 20,   # Ficha Google Maps
+    "p2b": 20,   # Sitio web
+    "p2c": 20,   # Reputación
+    "p2d": 15,   # Redes sociales
+    "p2e": 5,    # Visibilidad IA
+    "p2f": 20,   # Plataformas OTA
+}
+
+
 def calcular_score_p2b(business: dict) -> int:
-    """Score P2b basado en si tiene sitio web."""
+    """
+    Score P2b — Sitio web (máx 20).
+    Usa datos de lighthouse si están disponibles, si no usa heurística simple.
+    """
     if not business.get("website"):
         return 0
-    # Score básico — scorer_web enriquece esto en Etapa 2
-    return 8
+    score = 5  # tiene sitio web
+
+    lh_perf = business.get("lh_performance")
+    lh_seo  = business.get("lh_seo")
+    ssl     = business.get("website", "").startswith("https")
+
+    if ssl:                                              score += 3  # HTTPS
+    if lh_perf is not None:
+        if lh_perf >= 70:                                score += 4
+        elif lh_perf >= 50:                              score += 2
+    if lh_seo is not None:
+        if lh_seo >= 80:                                 score += 4
+        elif lh_seo >= 60:                               score += 2
+    # mobile_friendly — si se tiene dato
+    if business.get("lh_accessibility") and business.get("lh_accessibility") >= 80:
+        score += 4
+
+    return min(score, SCORE_MAX["p2b"])
 
 
 def calcular_score_p2d(socials: list) -> int:
-    """Score P2d basado en presencia en redes."""
+    """
+    Score P2d — Redes sociales activas (máx 15).
+    Considera presencia + actividad reciente si está disponible.
+    """
     score = 0
-    if get_social_url(socials, "instagram"): score += 5
-    if get_social_url(socials, "facebook"):  score += 5
-    return score
+    if get_social_url(socials, "instagram"): score += 6
+    if get_social_url(socials, "facebook"):  score += 4
+    if get_social_url(socials, "tiktok"):    score += 3
+    if get_social_url(socials, "youtube"):   score += 2
+    return min(score, SCORE_MAX["p2d"])
 
 
 def calcular_score_total(business: dict, socials: list) -> int:
-    """Score total 0-100."""
-    return (
+    """
+    Score total 0-100.
+    score_p2e y score_p2f son calculados por sus scorers específicos.
+    Si ya están en business, los incluye; si no, son 0.
+    """
+    return min(100, (
         (business.get("score_p2a") or 0) +
         calcular_score_p2b(business) +
         (business.get("score_p2c") or 0) +
         calcular_score_p2d(socials) +
-        0  # score_p2f y score_huella: Etapa 2 y 3
-    )
+        (business.get("score_p2e") or 0) +
+        (business.get("score_p2f") or 0)
+    ))
 
 
 # ──────────────────────────────────────────────

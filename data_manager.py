@@ -420,6 +420,15 @@ KEYS = {
         "negative_mentions", "inactive_social_profiles",
         "problems_count", "problems_easy", "problems_medium", "problems_hard",
     ],
+    "ai": [
+        "google_ai_overview",     # bool: aparece en AI Overview de Google
+        "google_ai_snippet",      # text: fragmento del AI Overview
+        "perplexity_mentioned",   # bool: encontrado en Perplexity
+        "perplexity_snippet",     # text: fragmento de Perplexity
+        "travel_guides_count",    # int: cuántas guías de viaje lo mencionan
+        "has_structured_data",    # bool: tiene JSON-LD en el sitio
+        "score_p2e",              # int: score calculado 0-5
+    ],
     "contact": [
         "email", "email_source", "whatsapp", "phone",
     ],
