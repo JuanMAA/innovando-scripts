@@ -20,6 +20,7 @@ Uso:
 import json
 import os
 from datetime import datetime, timezone, date
+from typing import Optional
 
 
 # ──────────────────────────────────────────────
@@ -82,15 +83,18 @@ API_CONFIG = {
 class APITracker:
     """
     Registra el uso de APIs en la sesión actual.
-    Persiste en .api_usage_{env}.json para acumular el historial diario.
+    Persiste en .api_usage_{env}.json (local) y en Supabase tabla api_usage.
+    El dashboard lee de Supabase; el JSON local es fallback offline.
     """
 
-    def __init__(self, env: str = "test"):
+    def __init__(self, env: str = "test", sb=None, script: str = ""):
         self.env       = env
         self.filepath  = f".api_usage_{env}.json"
         self.hoy       = str(date.today())
         self.session   = {}   # uso en esta sesión
         self.data      = self._cargar()
+        self._sb       = sb      # cliente Supabase (opcional)
+        self._script   = script  # nombre del script que lo instancia
 
     def _cargar(self) -> dict:
         """Carga el historial guardado."""
@@ -117,7 +121,7 @@ class APITracker:
         # Acumular en sesión actual
         self.session[api] = self.session.get(api, 0) + used
 
-        # Acumular en historial del día
+        # Acumular en historial local (JSON)
         if self.hoy not in self.data:
             self.data[self.hoy] = {}
         if api not in self.data[self.hoy]:
@@ -125,6 +129,26 @@ class APITracker:
         self.data[self.hoy][api] += used
 
         self._guardar()
+
+        # Sincronizar con Supabase (upsert: incrementar used)
+        self._sync_supabase(api, used)
+
+    def _sync_supabase(self, api: str, increment: int):
+        """Upsert en tabla api_usage — incrementa el contador del día."""
+        if not self._sb:
+            return
+        try:
+            total_hoy = self.data.get(self.hoy, {}).get(api, 0)
+            self._sb.table("api_usage").upsert({
+                "env":        self.env,
+                "api":        api,
+                "date":       self.hoy,
+                "used":       total_hoy,
+                "script":     self._script,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }, on_conflict="env,api,date").execute()
+        except Exception:
+            pass  # no interrumpir el script por fallos de sync
 
     def uso_hoy(self, api: str) -> int:
         """Total usado hoy para una API."""

@@ -46,6 +46,8 @@ from supabase_client import (
 from contact_manager import get_emails, get_phones
 from socials_manager import get_socials, get_social_url
 from data_manager import DataManager
+from search_client import SearchClient
+from api_usage_tracker import APITracker
 
 # ──────────────────────────────────────────────
 # CONFIGURACIÓN
@@ -230,7 +232,7 @@ async def analizar_google_maps(page, business: dict, api_key: str, verbose: bool
 # H2 · DIRECTORIOS LOCALES
 # ──────────────────────────────────────────────
 
-async def analizar_directorios(page, business: dict, cse_key: str | None, cse_id: str | None, verbose: bool) -> dict:
+async def analizar_directorios(page, business: dict, sc: SearchClient, verbose: bool) -> dict:
     """Verifica presencia y consistencia en directorios locales."""
     problemas_detectados = []
     score    = 20
@@ -247,26 +249,8 @@ async def analizar_directorios(page, business: dict, cse_key: str | None, cse_id
         domain = directorio["domain"]
         dname  = directorio["name"]
 
-        # Buscar via Google CSE o Playwright
-        url_encontrada = None
-
-        if cse_key and cse_id:
-            try:
-                resp = requests.get(
-                    "https://www.googleapis.com/customsearch/v1",
-                    params={
-                        "key": cse_key,
-                        "cx":  cse_id,
-                        "q":   f'site:{domain} "{name}" "{city}"',
-                        "num": 3,
-                    },
-                    timeout=10,
-                )
-                items = resp.json().get("items", [])
-                if items:
-                    url_encontrada = items[0].get("link")
-            except Exception:
-                pass
+        # Buscar via SearchClient (CSE → Brave automático)
+        url_encontrada = sc.buscar_en_sitio(name, city, domain)
 
         if url_encontrada:
             encontrados.append({"directorio": dname, "url": url_encontrada})
@@ -331,18 +315,66 @@ async def analizar_directorios(page, business: dict, cse_key: str | None, cse_id
 # H3 · PLATAFORMAS DE VIAJE
 # ──────────────────────────────────────────────
 
-async def analizar_plataformas(page, business: dict, verbose: bool) -> dict:
-    """Verifica presencia y calidad en plataformas de viaje."""
+async def analizar_plataformas(page, business: dict, sb, verbose: bool) -> dict:
+    """
+    Verifica presencia y calidad en plataformas de viaje.
+    Usa datos de business_data (módulo platform) si scorer_plataformas ya corrió.
+    Fallback: búsqueda Google básica para detectar ausencia.
+    """
     problemas_detectados = []
-    score  = 20
-    name   = business.get("name", "")
-    city   = business.get("city", "")
+    score = 20
+    name  = business.get("name", "")
+    city  = business.get("city", "")
+    bid   = business.get("id")
 
-    # Leer datos de plataformas del reporte anterior si existen
-    # (scorer_plataformas los guarda en reports.modulo_p2f)
+    # ── Leer datos de scorer_plataformas si ya corrió ────────
+    plataformas_encontradas = []
+    plataformas_faltantes   = []
+
+    if bid:
+        dm = DataManager(sb, bid)
+        platforms_count = dm.get_int("platform", "platforms_count", default=-1)
+
+        if platforms_count >= 0:
+            # Datos reales disponibles — usar directamente
+            for plat_id, nombre_plat in [
+                ("booking",     "Booking.com"),
+                ("airbnb",      "Airbnb"),
+                ("tripadvisor", "TripAdvisor"),
+                ("expedia",     "Expedia"),
+                ("despegar",    "Despegar"),
+            ]:
+                url = dm.get_text("platform", f"{plat_id}_url")
+                if url:
+                    plataformas_encontradas.append(nombre_plat)
+                else:
+                    plataformas_faltantes.append(nombre_plat)
+
+            if verbose:
+                print(f"   📊 Plataformas (datos reales): {platforms_count}/5 encontradas")
+
+            # Score basado en datos reales
+            pts_perdidos = len(plataformas_faltantes) * 2
+            score = max(0, score - pts_perdidos)
+
+            if plataformas_faltantes:
+                problemas_detectados.append(problema(
+                    modulo="h3_plataformas",
+                    tipo="missing_travel_platforms",
+                    descripcion=f"Sin presencia en: {', '.join(plataformas_faltantes[:3])}.",
+                    impacto="Booking y TripAdvisor concentran el 65% de las búsquedas de alojamiento.",
+                    dificultad="medium",
+                    solucion_diy="Crear perfil gratuito en cada plataforma (30-60 min por plataforma).",
+                    solucion_innovando="Setup completo en todas las plataformas + optimización de perfil.",
+                    precio_diy=3,
+                    precio_innovando=90000,
+                ))
+
+            return {"score": score, "problemas": problemas_detectados,
+                    "encontradas": plataformas_encontradas, "faltantes": plataformas_faltantes}
+
+    # ── Fallback: búsqueda Google básica (scorer_plataformas no corrió) ──
     sin_presencia = []
-
-    # Verificar Booking y TripAdvisor básico via búsqueda
     for plataforma in ["booking.com", "tripadvisor.com"]:
         try:
             await page.goto(
@@ -368,7 +400,7 @@ async def analizar_plataformas(page, business: dict, verbose: bool) -> dict:
             descripcion=f"Sin presencia verificada en: {', '.join(sin_presencia)}.",
             impacto="Booking y TripAdvisor concentran el 65% de las búsquedas de alojamiento.",
             dificultad="medium",
-            solucion_diy="Crear perfil gratuito en cada plataforma. El proceso toma 30-60 minutos por plataforma.",
+            solucion_diy="Crear perfil gratuito en cada plataforma (30-60 min por plataforma).",
             solucion_innovando="Setup completo en todas las plataformas + optimización de perfil.",
             precio_diy=3,
             precio_innovando=90000,
@@ -478,7 +510,7 @@ def _detectar_inactividad(texto: str) -> int | None:
 # H5 · MEDIOS Y BLOGS — menciones negativas
 # ──────────────────────────────────────────────
 
-async def analizar_medios(page, business: dict, cse_key: str | None, cse_id: str | None, verbose: bool) -> dict:
+async def analizar_medios(page, business: dict, sc: SearchClient, verbose: bool) -> dict:
     """Busca menciones negativas en medios y blogs."""
     problemas_detectados = []
     score  = 10
@@ -495,45 +527,25 @@ async def analizar_medios(page, business: dict, cse_key: str | None, cse_id: str
         "robo", "engaño", "evitar", "avoid", "warning"
     ]
 
-    if not cse_key or not cse_id:
-        # Fallback: búsqueda con Playwright
-        queries = [
-            f'"{name}" {city} -site:google.com -site:booking.com -site:tripadvisor.com',
-            f'"{name}" opiniones',
-        ]
-    else:
-        queries = [f'"{name}" {city}']
+    # Brave es ideal para esto: búsqueda abierta sin operadores site:
+    queries = [
+        f'"{name}" {city} opiniones',
+        f'"{name}" {city}',
+    ]
+    exclude = ["google.com", "booking.com", "tripadvisor.com", "airbnb.com"]
 
     for query in queries[:2]:
         try:
-            if cse_key and cse_id:
-                resp = requests.get(
-                    "https://www.googleapis.com/customsearch/v1",
-                    params={"key": cse_key, "cx": cse_id, "q": query, "num": 10},
-                    timeout=10,
-                )
-                items = resp.json().get("items", [])
-                for item in items:
-                    snippet = (item.get("snippet") or "").lower()
-                    title   = (item.get("title") or "").lower()
-                    texto   = snippet + " " + title
-                    link    = item.get("link", "")
-
-                    if any(w in texto for w in palabras_negativas):
-                        menciones_negativas.append({"url": link, "title": item.get("title", "")})
-                    else:
-                        menciones_positivas.append(link)
-            else:
-                await page.goto(
-                    f"https://www.google.com/search?q={query.replace(' ', '+')}",
-                    timeout=TIMEOUT_MS,
-                    wait_until="domcontentloaded"
-                )
-                await page.wait_for_timeout(1500)
-                texto = await page.inner_text("body").lower()
+            resultados = sc.buscar_menciones(query, num=10, exclude_domains=exclude)
+            for r in resultados:
+                snippet = (r.get("snippet") or "").lower()
+                title   = (r.get("title") or "").lower()
+                texto   = snippet + " " + title
+                link    = r.get("url", "")
                 if any(w in texto for w in palabras_negativas):
-                    menciones_negativas.append({"url": "google_search", "title": "Mención negativa detectada"})
-
+                    menciones_negativas.append({"url": link, "title": r.get("title", "")})
+                else:
+                    menciones_positivas.append(link)
         except Exception as e:
             if verbose: print(f"      ⚠️  Error buscando menciones: {e}")
 
@@ -695,8 +707,14 @@ async def run(env: str, max_leads: int | None, verbose: bool, slug: str | None, 
     api_key   = os.getenv("GOOGLE_PLACES_API_KEY")
     cse_key   = os.getenv("GOOGLE_CSE_KEY")
     cse_id    = os.getenv("GOOGLE_CSE_ID")
+    brave_key = os.getenv("BRAVE_SEARCH_KEY")
 
-    sb = get_client(env=env)
+    sb      = get_client(env=env)
+    tracker = APITracker(env=env, sb=sb, script="scorer_huella")
+    sc      = SearchClient(cse_key=cse_key, cse_id=cse_id,
+                           brave_key=brave_key, tracker=tracker)
+
+    print(f"\n{sc.estado()}")
 
     # Obtener leads a analizar
     if slug:
@@ -746,11 +764,11 @@ async def run(env: str, max_leads: int | None, verbose: bool, slug: str | None, 
 
                 # H2 — Directorios
                 print(f"   📋 H2 · Directorios...")
-                resultados["h2"] = await analizar_directorios(page, business, cse_key, cse_id, verbose)
+                resultados["h2"] = await analizar_directorios(page, business, sc, verbose)
 
                 # H3 — Plataformas de viaje
                 print(f"   ✈️  H3 · Plataformas...")
-                resultados["h3"] = await analizar_plataformas(page, business, verbose)
+                resultados["h3"] = await analizar_plataformas(page, business, sb, verbose)
 
                 # H4 — Redes sociales
                 print(f"   📱 H4 · Redes sociales...")
@@ -758,7 +776,7 @@ async def run(env: str, max_leads: int | None, verbose: bool, slug: str | None, 
 
                 # H5 — Medios y blogs
                 print(f"   📰 H5 · Medios y blogs...")
-                resultados["h5"] = await analizar_medios(page, business, cse_key, cse_id, verbose)
+                resultados["h5"] = await analizar_medios(page, business, sc, verbose)
 
                 # H6 — NAP consistency
                 print(f"   📌 H6 · NAP consistency...")
