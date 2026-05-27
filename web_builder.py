@@ -543,7 +543,7 @@ def fetch_lead(sb, lead_id: str) -> dict | None:
 
 def list_pending_leads(sb, limit: int = 20) -> list[dict]:
     r = (sb.table("leads")
-           .select("id, name, email, website_linkedin, message, service_interest, created_at")
+           .select("id, name, email, website_url, website_linkedin, message, service_interest, created_at")
            .in_("service_interest", list(LEAD_SERVICE_VALUES))
            .order("created_at", desc=True)
            .limit(limit)
@@ -561,19 +561,27 @@ def list_pending_leads(sb, limit: int = 20) -> list[dict]:
 
 
 def extract_url_from_lead(lead: dict) -> str | None:
-    """Saca la URL del sitio desde `website_linkedin` o `message`."""
-    # Field directo
+    """Saca la URL del sitio. Prioridad:
+    1. website_url (campo nuevo del form, dedicado a auditoría web)
+    2. website_linkedin (legacy)
+    3. message (fallback con regex)
+    """
+    # 1. Campo nuevo, dedicado
+    site = (lead.get("website_url") or "").strip()
+    if site and "." in site:
+        return normalize_url(site)
+
+    # 2. Legacy: website_linkedin (si no es linkedin)
     site = (lead.get("website_linkedin") or "").strip()
     if site and "linkedin" not in site.lower() and "." in site:
         return normalize_url(site)
 
-    # Buscar en message como fallback
+    # 3. Fallback: buscar URL en message
     msg = lead.get("message") or ""
     m = re.search(r"https?://[\w\.-]+(?:/[\w\.\-/?&=%#]*)?", msg)
     if m:
         return normalize_url(m.group(0))
 
-    # Si website_linkedin es linkedin pero no encontramos otro
     return None
 
 

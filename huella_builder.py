@@ -416,6 +416,31 @@ LEAD_SERVICE_VALUES = (
 )
 
 
+def _parse_emails_extra(raw: str | None) -> list[str]:
+    """Parsea el textarea emails_extra: separa por coma o salto de línea."""
+    if not raw:
+        return []
+    parts = re.split(r"[,\n;]+", raw)
+    return [p.strip() for p in parts if p.strip() and "@" in p]
+
+
+def _parse_domains(raw: str | None) -> list[str]:
+    """Parsea el textarea domains: separa por coma/espacio/salto y limpia."""
+    if not raw:
+        return []
+    parts = re.split(r"[,\s;]+", raw)
+    out = []
+    for p in parts:
+        p = p.strip().lower()
+        if not p:
+            continue
+        # quitar protocolo y path
+        p = re.sub(r"^https?://(www\.)?", "", p).split("/")[0]
+        if "." in p and p not in out:
+            out.append(p)
+    return out
+
+
 def lead_to_context(lead: dict) -> AuditContext:
     """Construye AuditContext desde una fila de la tabla leads."""
     socials: dict[str, str] = {}
@@ -429,13 +454,17 @@ def lead_to_context(lead: dict) -> AuditContext:
             # se trata de un sitio propio → va a dominios
             pass
 
-    # Dominios desde website_linkedin si no es linkedin
-    domains: list[str] = []
-    site = lead.get("website_linkedin")
-    if site and "linkedin" not in (site or "").lower():
-        domain = re.sub(r"^https?://(www\.)?", "", site).split("/")[0]
-        if "." in domain:
-            domains.append(domain)
+    # Dominios: prioridad al campo nuevo `domains`, fallback a website_linkedin/website_url
+    domains: list[str] = _parse_domains(lead.get("domains"))
+    for src_field in ("website_url", "website_linkedin"):
+        site = lead.get(src_field)
+        if site and "linkedin" not in (site or "").lower():
+            d = re.sub(r"^https?://(www\.)?", "", site).split("/")[0]
+            if "." in d and d.lower() not in domains:
+                domains.append(d.lower())
+
+    # Emails extra (campo nuevo del form)
+    emails_extra = _parse_emails_extra(lead.get("emails_extra"))
 
     # Tipo de sujeto
     subject_type = SUBJECT_TYPES_BY_BIZ.get(
@@ -447,6 +476,7 @@ def lead_to_context(lead: dict) -> AuditContext:
         subject_name = lead.get("name") or "Sin nombre",
         subject_type = subject_type,
         email_main   = lead.get("email"),
+        emails_extra = emails_extra,
         socials      = socials,
         domains      = domains,
         phone        = lead.get("phone"),

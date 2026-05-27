@@ -212,10 +212,12 @@ def scrape_business_on_demand(sb, lead: dict, places_key: str,
 
     # Armar query con hint de país (Places lo necesita para narrow)
     hint = COUNTRY_HINTS.get(country, "")
-    # Si el lead tiene message que contenga la ciudad, lo usamos
-    msg  = lead.get("message") or ""
-    city_match = re.search(r"\b([A-ZÁÉÍÓÚÑ][a-záéíóúñ]{3,}(?:\s[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)?)\b", msg)
-    city = city_match.group(1) if city_match else ""
+    # Ciudad: prioridad al campo nuevo del form; fallback a regex sobre message
+    city = (lead.get("city") or "").strip()
+    if not city:
+        msg  = lead.get("message") or ""
+        m = re.search(r"\b([A-ZÁÉÍÓÚÑ][a-záéíóúñ]{3,}(?:\s[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)?)\b", msg)
+        if m: city = m.group(1)
     query = f"{name} {city or hint}".strip()
 
     place = _places_text_search(query, places_key, verbose=verbose)
@@ -286,12 +288,12 @@ def find_business_for_lead(sb, lead: dict, verbose: bool = False) -> dict | None
     """Intenta encontrar el `business` correspondiente al lead.
 
     Estrategia:
-      1. Match por dominio (website_linkedin)
+      1. Match por dominio (website_url o website_linkedin)
       2. Match por nombre comercial (fuzzy) en cualquier país,
          priorizando el country del lead si lo tiene.
     """
-    # ── 1. Match por dominio ──
-    site = lead.get("website_linkedin") or ""
+    # ── 1. Match por dominio ── prioridad al campo nuevo website_url
+    site = lead.get("website_url") or lead.get("website_linkedin") or ""
     if site and "linkedin" not in site.lower():
         domain = extract_domain(site)
         if domain and "." in domain:
@@ -412,7 +414,7 @@ def fetch_lead(sb, lead_id: str) -> dict | None:
 
 def list_pending_leads(sb, limit: int = 50) -> list[dict]:
     r = (sb.table("leads")
-           .select("id, name, email, website_linkedin, country, page_slug, "
+           .select("id, name, email, website_url, website_linkedin, city, country, page_slug, "
                    "service_interest, status, created_at, business_id")
            .in_("service_interest", list(LEAD_SERVICE_VALUES))
            .order("created_at", desc=True)
